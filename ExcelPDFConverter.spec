@@ -9,7 +9,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=["win32com.client", "pythoncom", "pywintypes"],
+    hiddenimports=["win32com.client", "pythoncom", "pywintypes", "win32print"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -36,4 +36,3 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
-

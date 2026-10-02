@@ -4,7 +4,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import excel_pdf_converter.converter as converter
-from excel_pdf_converter.converter import validate_inputs
+from excel_pdf_converter.converter import _find_local_pdf_printer, validate_inputs
 
 
 def test_validate_inputs_accepts_excel_and_creates_output(tmp_path: Path) -> None:
@@ -20,6 +20,17 @@ def test_validate_inputs_rejects_non_excel(tmp_path: Path) -> None:
     source.touch()
     with pytest.raises(ValueError, match="対応していない"):
         validate_inputs([source], tmp_path / "pdf")
+
+
+def test_find_local_pdf_printer_prefers_microsoft_pdf() -> None:
+    fake = SimpleNamespace(
+        PRINTER_ENUM_LOCAL=2,
+        EnumPrinters=lambda *_: [
+            {"pPrinterName": "Microsoft XPS Document Writer"},
+            {"pPrinterName": "Microsoft Print to PDF"},
+        ],
+    )
+    assert _find_local_pdf_printer(fake) == "Microsoft Print to PDF"
 
 
 def test_convert_exports_only_visible_sheets_and_closes_excel(
@@ -70,11 +81,20 @@ def test_convert_exports_only_visible_sheets_and_closes_excel(
     client.DispatchEx = lambda _: excel  # type: ignore[attr-defined]
     win32com = ModuleType("win32com")
     win32com.client = client  # type: ignore[attr-defined]
+    printer_changes: list[str] = []
+    win32print = ModuleType("win32print")
+    win32print.PRINTER_ENUM_LOCAL = 2  # type: ignore[attr-defined]
+    win32print.EnumPrinters = lambda *_: [  # type: ignore[attr-defined]
+        {"pPrinterName": "Microsoft Print to PDF"}
+    ]
+    win32print.GetDefaultPrinter = lambda: "社内ネットワークプリンター"  # type: ignore[attr-defined]
+    win32print.SetDefaultPrinter = printer_changes.append  # type: ignore[attr-defined]
 
     monkeypatch.setattr(converter.sys, "platform", "win32")
     monkeypatch.setitem(converter.sys.modules, "pythoncom", pythoncom)
     monkeypatch.setitem(converter.sys.modules, "win32com", win32com)
     monkeypatch.setitem(converter.sys.modules, "win32com.client", client)
+    monkeypatch.setitem(converter.sys.modules, "win32print", win32print)
 
     result = converter.convert_workbooks([source], output)
 
@@ -83,3 +103,8 @@ def test_convert_exports_only_visible_sheets_and_closes_excel(
     assert not result.failures
     assert workbook.closed is True
     assert excel.quit_called is True
+    assert printer_changes == [
+        "Microsoft Print to PDF",
+        "社内ネットワークプリンター",
+        "社内ネットワークプリンター",
+    ]

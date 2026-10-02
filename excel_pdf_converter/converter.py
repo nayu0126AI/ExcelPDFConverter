@@ -20,6 +20,11 @@ XL_SHEET_VISIBLE = -1
 
 ProgressCallback = Callable[[int, int, str], None]
 
+_LOCAL_PDF_PRINTERS = (
+    "Microsoft Print to PDF",
+    "Microsoft XPS Document Writer",
+)
+
 
 class ConversionUnavailableError(RuntimeError):
     """Raised when Microsoft Excel automation is unavailable."""
@@ -65,6 +70,71 @@ def _friendly_excel_error(error: Exception) -> str:
     return "変換できませんでした。ファイルを閉じて、もう一度お試しください。"
 
 
+def _find_local_pdf_printer(win32print: object) -> str | None:
+    """Return a local Windows virtual printer suitable for Excel page layout."""
+    try:
+        flags = win32print.PRINTER_ENUM_LOCAL  # type: ignore[attr-defined]
+        printers = win32print.EnumPrinters(flags, None, 2)  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+    names = {
+        str(printer.get("pPrinterName", "")).casefold(): str(
+            printer.get("pPrinterName", "")
+        )
+        for printer in printers
+        if isinstance(printer, dict) and printer.get("pPrinterName")
+    }
+    for preferred_name in _LOCAL_PDF_PRINTERS:
+        if preferred_name.casefold() in names:
+            return names[preferred_name.casefold()]
+    return None
+
+
+def _prepare_local_printer(win32print: object) -> tuple[str | None, bool]:
+    """Temporarily make a local virtual printer the Windows default.
+
+    Excel captures the default printer when it starts. The caller restores the
+    user's original default immediately after Excel has started.
+    """
+    printer_name = _find_local_pdf_printer(win32print)
+    if not printer_name:
+        raise ConversionUnavailableError(
+            "PDF変換に必要な「Microsoft Print to PDF」が見つかりません。"
+            "Windowsの設定でこの機能を有効にしてから、もう一度お試しください。"
+        )
+
+    try:
+        original = str(win32print.GetDefaultPrinter())  # type: ignore[attr-defined]
+    except Exception:
+        original = None
+
+    changed = original != printer_name
+    if changed:
+        try:
+            win32print.SetDefaultPrinter(printer_name)  # type: ignore[attr-defined]
+        except Exception as error:
+            raise ConversionUnavailableError(
+                "プリンターの接続待ちを回避できませんでした。"
+                "Windowsの既定のプリンターを「Microsoft Print to PDF」にしてから、"
+                "もう一度お試しください。"
+            ) from error
+    return original, changed
+
+
+def _restore_default_printer(
+    win32print: object, original: str | None, changed: bool
+) -> None:
+    if not changed or not original:
+        return
+    try:
+        win32print.SetDefaultPrinter(original)  # type: ignore[attr-defined]
+    except Exception:
+        # PDF conversion can continue. The app makes another restoration attempt
+        # during final cleanup.
+        pass
+
+
 def convert_workbooks(
     files: Iterable[Path],
     output_dir: Path,
@@ -83,6 +153,7 @@ def convert_workbooks(
 
     try:
         import pythoncom
+        import win32print
         import win32com.client
     except ImportError as error:
         raise ConversionUnavailableError(
@@ -91,14 +162,19 @@ def convert_workbooks(
 
     result = ConversionResult()
     excel = None
+    original_printer: str | None = None
+    printer_changed = False
     pythoncom.CoInitialize()
     try:
+        original_printer, printer_changed = _prepare_local_printer(win32print)
         try:
             excel = win32com.client.DispatchEx("Excel.Application")
         except Exception as error:
             raise ConversionUnavailableError(
                 "Microsoft Excelを起動できませんでした。Excelが入っているか確認してください。"
             ) from error
+        finally:
+            _restore_default_printer(win32print, original_printer, printer_changed)
 
         excel.Visible = False
         excel.DisplayAlerts = False
@@ -158,7 +234,7 @@ def convert_workbooks(
             except Exception:
                 pass
             excel = None
+        _restore_default_printer(win32print, original_printer, printer_changed)
         pythoncom.CoUninitialize()
 
     return result
-
