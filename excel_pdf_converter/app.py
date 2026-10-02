@@ -7,6 +7,7 @@ import queue
 import subprocess
 import sys
 import threading
+import ctypes
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -22,6 +23,8 @@ from .converter import (
 APP_TITLE = "Excel → PDF 変換"
 ACCENT = "#2563EB"
 ACCENT_HOVER = "#1D4ED8"
+CONVERT = "#16803A"
+CONVERT_HOVER = "#116B31"
 TEXT = "#172033"
 SUBTEXT = "#64748B"
 BORDER = "#E2E8F0"
@@ -29,6 +32,12 @@ SURFACE = "#FFFFFF"
 BACKGROUND = "#F4F7FB"
 SUCCESS = "#16803A"
 ERROR = "#C2413B"
+
+
+def _resource_path(relative_path: str) -> Path:
+    """Return a resource path both in source and in a PyInstaller bundle."""
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return bundle_root / relative_path
 
 
 class ExcelPdfApp(ctk.CTk):
@@ -40,6 +49,11 @@ class ExcelPdfApp(ctk.CTk):
         self.is_converting = False
 
         self.title(APP_TITLE)
+        if sys.platform == "win32":
+            try:
+                self.iconbitmap(str(_resource_path("assets/app_icon.ico")))
+            except Exception:
+                pass
         self.geometry("780x760")
         self.minsize(700, 700)
         self.configure(fg_color=BACKGROUND)
@@ -131,15 +145,15 @@ class ExcelPdfApp(ctk.CTk):
             command=self._start_conversion,
             height=58,
             corner_radius=10,
-            fg_color=ACCENT,
-            hover_color=ACCENT_HOVER,
+            fg_color=CONVERT,
+            hover_color=CONVERT_HOVER,
             font=ctk.CTkFont(size=17, weight="bold"),
             state="disabled",
         )
         self.convert_button.pack(fill="x", pady=(14, 16))
 
         self.progress_bar = ctk.CTkProgressBar(
-            content, height=10, corner_radius=5, progress_color=ACCENT, fg_color="#E8EEF6"
+            content, height=10, corner_radius=5, progress_color=CONVERT, fg_color="#E8EEF6"
         )
         self.progress_bar.pack(fill="x")
         self.progress_bar.set(0)
@@ -246,7 +260,7 @@ class ExcelPdfApp(ctk.CTk):
         self.is_converting = True
         self.open_button.pack_forget()
         self.progress_bar.set(0)
-        self.status_label.configure(text="変換を開始しています…", text_color=ACCENT)
+        self.status_label.configure(text="変換を開始しています…", text_color=CONVERT)
         self._set_controls_enabled(False)
         files = list(self.selected_files)
         output_dir = self.output_dir
@@ -275,7 +289,7 @@ class ExcelPdfApp(ctk.CTk):
                 if event == "progress":
                     completed, total, message = payload  # type: ignore[misc]
                     self.progress_bar.set(completed / total if total else 0)
-                    self.status_label.configure(text=message, text_color=ACCENT)
+                    self.status_label.configure(text=message, text_color=CONVERT)
                 elif event == "done":
                     self._show_result(payload)  # type: ignore[arg-type]
                 elif event == "error":
@@ -301,7 +315,10 @@ class ExcelPdfApp(ctk.CTk):
             )
             messagebox.showwarning("一部の変換が完了しませんでした", f"{message}\n\n{details}")
         else:
-            message = f"完了しました。{result.success_count}件のPDFを作成しました。"
+            message = (
+                f"完了しました。{result.success_count}件のPDFを作成しました。"
+                f"（{result.elapsed_seconds:.1f}秒）"
+            )
             self.status_label.configure(text=message, text_color=SUCCESS)
         self.open_button.pack(fill="x", pady=(8, 0))
 
@@ -328,6 +345,12 @@ class ExcelPdfApp(ctk.CTk):
 
 
 def main() -> None:
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(  # type: ignore[attr-defined]
+                "InternalTools.ExcelPDFConverter.1.1"
+            )
+        except Exception:
+            pass
     app = ExcelPdfApp()
     app.mainloop()
-

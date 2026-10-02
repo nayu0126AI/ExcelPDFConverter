@@ -6,8 +6,11 @@ and reused by a different interface later.
 
 from __future__ import annotations
 
+import os
 import sys
+import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -17,6 +20,8 @@ SUPPORTED_EXTENSIONS = {".xlsx", ".xls", ".xlsm", ".xlsb"}
 XL_TYPE_PDF = 0
 XL_QUALITY_STANDARD = 0
 XL_SHEET_VISIBLE = -1
+XL_CALCULATION_MANUAL = -4135
+MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
 
 ProgressCallback = Callable[[int, int, str], None]
 
@@ -40,6 +45,7 @@ class ConversionFailure:
 class ConversionResult:
     pdf_files: list[Path] = field(default_factory=list)
     failures: list[ConversionFailure] = field(default_factory=list)
+    elapsed_seconds: float = 0.0
 
     @property
     def success_count(self) -> int:
@@ -135,6 +141,30 @@ def _restore_default_printer(
         pass
 
 
+def _set_if_supported(target: object, name: str, value: object) -> None:
+    """Set an optional Excel property without failing on older installations."""
+    try:
+        setattr(target, name, value)
+    except Exception:
+        pass
+
+
+def _write_performance_log(lines: list[str]) -> None:
+    """Write timing data for diagnosing slow workbooks on Windows."""
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return
+    try:
+        log_dir = Path(local_app_data) / "ExcelPDFConverter"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "conversion.log"
+        with log_path.open("a", encoding="utf-8") as log_file:
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_file.write(f"[{stamp}] " + " | ".join(lines) + "\n")
+    except Exception:
+        pass
+
+
 def convert_workbooks(
     files: Iterable[Path],
     output_dir: Path,
@@ -161,12 +191,17 @@ def convert_workbooks(
         ) from error
 
     result = ConversionResult()
+    total_started = time.perf_counter()
+    timing_lines: list[str] = []
     excel = None
     original_printer: str | None = None
     printer_changed = False
     pythoncom.CoInitialize()
     try:
+        printer_started = time.perf_counter()
         original_printer, printer_changed = _prepare_local_printer(win32print)
+        timing_lines.append(f"printer={time.perf_counter() - printer_started:.2f}s")
+        excel_started = time.perf_counter()
         try:
             excel = win32com.client.DispatchEx("Excel.Application")
         except Exception as error:
@@ -175,16 +210,26 @@ def convert_workbooks(
             ) from error
         finally:
             _restore_default_printer(win32print, original_printer, printer_changed)
+        timing_lines.append(f"excel_start={time.perf_counter() - excel_started:.2f}s")
 
         excel.Visible = False
         excel.DisplayAlerts = False
         excel.AskToUpdateLinks = False
+        _set_if_supported(excel, "ScreenUpdating", False)
+        _set_if_supported(excel, "EnableEvents", False)
+        _set_if_supported(excel, "DisplayStatusBar", False)
+        _set_if_supported(excel, "Calculation", XL_CALCULATION_MANUAL)
+        _set_if_supported(excel, "CalculateBeforeSave", False)
+        _set_if_supported(
+            excel, "AutomationSecurity", MSO_AUTOMATION_SECURITY_FORCE_DISABLE
+        )
         total = len(paths)
 
         for index, workbook_path in enumerate(paths, start=1):
             workbook = None
             if progress:
                 progress(index - 1, total, f"変換中：{workbook_path.name}")
+            workbook_started = time.perf_counter()
             try:
                 workbook = excel.Workbooks.Open(
                     str(workbook_path),
@@ -192,12 +237,23 @@ def convert_workbooks(
                     ReadOnly=True,
                     IgnoreReadOnlyRecommended=True,
                     Notify=False,
+                    AddToMru=False,
                 )
-                visible_count = 0
-                for worksheet in workbook.Worksheets:
-                    if worksheet.Visible != XL_SHEET_VISIBLE:
-                        continue
-                    visible_count += 1
+                opened_at = time.perf_counter()
+                visible_sheets = [
+                    worksheet
+                    for worksheet in workbook.Worksheets
+                    if worksheet.Visible == XL_SHEET_VISIBLE
+                ]
+                for sheet_index, worksheet in enumerate(visible_sheets, start=1):
+                    if progress:
+                        progress(
+                            index - 1,
+                            total,
+                            f"変換中：{workbook_path.name} "
+                            f"（{sheet_index}/{len(visible_sheets)}シート）",
+                        )
+                    sheet_started = time.perf_counter()
                     output_path = available_pdf_path(
                         output_dir, workbook_path.stem, str(worksheet.Name)
                     )
@@ -205,15 +261,22 @@ def convert_workbooks(
                         Type=XL_TYPE_PDF,
                         Filename=str(output_path),
                         Quality=XL_QUALITY_STANDARD,
-                        IncludeDocProperties=True,
+                        IncludeDocProperties=False,
                         IgnorePrintAreas=False,
                         OpenAfterPublish=False,
                     )
                     result.pdf_files.append(output_path)
-                if visible_count == 0:
+                    timing_lines.append(
+                        f"workbook{index}/sheet{sheet_index}="
+                        f"{time.perf_counter() - sheet_started:.2f}s"
+                    )
+                if not visible_sheets:
                     result.failures.append(
                         ConversionFailure(workbook_path, "表示されているシートがありません。")
                     )
+                timing_lines.append(
+                    f"open:workbook{index}={opened_at - workbook_started:.2f}s"
+                )
             except Exception as error:
                 result.failures.append(
                     ConversionFailure(workbook_path, _friendly_excel_error(error))
@@ -236,5 +299,8 @@ def convert_workbooks(
             excel = None
         _restore_default_printer(win32print, original_printer, printer_changed)
         pythoncom.CoUninitialize()
+        result.elapsed_seconds = time.perf_counter() - total_started
+        timing_lines.append(f"total={result.elapsed_seconds:.2f}s")
+        _write_performance_log(timing_lines)
 
     return result

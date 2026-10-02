@@ -2,7 +2,7 @@
 
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = collect_data_files("customtkinter")
+datas = collect_data_files("customtkinter") + [("assets/app_icon.ico", "assets")]
 
 a = Analysis(
     ["run_app.py"],
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=["assets/app_icon.ico"],
 )

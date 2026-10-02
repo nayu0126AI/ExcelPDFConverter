@@ -100,6 +100,7 @@ def test_convert_exports_only_visible_sheets_and_closes_excel(
 
     assert exported == ["sample_表示.pdf"]
     assert result.success_count == 1
+    assert result.elapsed_seconds >= 0
     assert not result.failures
     assert workbook.closed is True
     assert excel.quit_called is True
