@@ -35,6 +35,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ExcelPDFConverter-Windows
-          path: dist/ExcelPDFConverter.exe
+          path: dist/ExcelPDFConverter_v1.2.0.exe
           if-no-files-found: error
-

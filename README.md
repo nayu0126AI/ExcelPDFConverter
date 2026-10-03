@@ -48,7 +48,7 @@ python run_app.py
 
 ### 「プリンターの接続を待っています」と表示される場合
 
-バージョン1.0.1以降では、Excel起動時だけローカルの「Microsoft Print to PDF」を利用し、ネットワークプリンターへの接続待ちを回避します。実際の印刷は行いません。Windowsの既定プリンターは、Excel起動直後に元の設定へ戻します。
+バージョン1.2.0以降では、変換がすべて終わるまでローカルの「Microsoft Print to PDF」を利用し、ネットワークプリンターへの接続待ちを回避します。Excel側にもプリンター名とポートを明示的に指定します。実際の印刷は行わず、処理終了時にはWindowsの既定プリンターを元の設定へ戻します。
 
 「Microsoft Print to PDF」が無効なPCでは、Windowsの「Windowsの機能の有効化または無効化」から有効にするか、社内IT担当者へご相談ください。
 
@@ -72,7 +72,7 @@ WindowsのPowerShellで次を実行します。
 .\build.ps1
 ```
 
-テスト後、`dist\ExcelPDFConverter.exe` が作られます。PyInstaller設定で `console=False` にしているため、完成版exeでは黒いコンソール画面は表示されません。
+テスト後、`dist\ExcelPDFConverter_v1.2.0.exe` が作られます。PyInstaller設定で `console=False` にしているため、完成版exeでは黒いコンソール画面は表示されません。
 
 MacからWindows用exeを直接作ることはできません。Windows PCまたはGitHub ActionsのWindows環境でビルドしてください。
 

@@ -2,7 +2,7 @@
 
 from PyInstaller.utils.hooks import collect_data_files
 
-datas = collect_data_files("customtkinter") + [("assets/app_icon.ico", "assets")]
+datas = collect_data_files("customtkinter") + [("assets/app_icon.png", "assets")]
 
 a = Analysis(
     ["run_app.py"],
@@ -24,7 +24,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="ExcelPDFConverter",
+    name="ExcelPDFConverter_v1.2.0",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=["assets/app_icon.ico"],
+    icon=["assets/app_icon.png"],
 )

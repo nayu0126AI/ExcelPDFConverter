@@ -52,6 +52,12 @@ class ConversionResult:
         return len(self.pdf_files)
 
 
+@dataclass(frozen=True)
+class LocalPrinter:
+    name: str
+    port: str
+
+
 def validate_inputs(files: Iterable[Path], output_dir: Path) -> list[Path]:
     """Validate and normalize user-selected paths before starting Excel."""
     normalized = [Path(path).resolve() for path in files]
@@ -76,35 +82,38 @@ def _friendly_excel_error(error: Exception) -> str:
     return "変換できませんでした。ファイルを閉じて、もう一度お試しください。"
 
 
-def _find_local_pdf_printer(win32print: object) -> str | None:
-    """Return a local Windows virtual printer suitable for Excel page layout."""
+def _find_local_pdf_printer(win32print: object) -> LocalPrinter | None:
+    """Return a local Windows virtual printer and its exact port."""
     try:
         flags = win32print.PRINTER_ENUM_LOCAL  # type: ignore[attr-defined]
         printers = win32print.EnumPrinters(flags, None, 2)  # type: ignore[attr-defined]
     except Exception:
         return None
 
-    names = {
-        str(printer.get("pPrinterName", "")).casefold(): str(
-            printer.get("pPrinterName", "")
+    printers_by_name = {
+        str(printer.get("pPrinterName", "")).casefold(): LocalPrinter(
+            name=str(printer.get("pPrinterName", "")),
+            port=str(printer.get("pPortName", "")).split(",")[0].strip(),
         )
         for printer in printers
         if isinstance(printer, dict) and printer.get("pPrinterName")
     }
     for preferred_name in _LOCAL_PDF_PRINTERS:
-        if preferred_name.casefold() in names:
-            return names[preferred_name.casefold()]
+        if preferred_name.casefold() in printers_by_name:
+            return printers_by_name[preferred_name.casefold()]
     return None
 
 
-def _prepare_local_printer(win32print: object) -> tuple[str | None, bool]:
+def _prepare_local_printer(
+    win32print: object,
+) -> tuple[LocalPrinter, str | None, bool]:
     """Temporarily make a local virtual printer the Windows default.
 
-    Excel captures the default printer when it starts. The caller restores the
-    user's original default immediately after Excel has started.
+    Excel consults the active printer again while opening a workbook and while
+    exporting each sheet. The caller keeps this printer selected throughout.
     """
-    printer_name = _find_local_pdf_printer(win32print)
-    if not printer_name:
+    printer = _find_local_pdf_printer(win32print)
+    if not printer:
         raise ConversionUnavailableError(
             "PDF変換に必要な「Microsoft Print to PDF」が見つかりません。"
             "Windowsの設定でこの機能を有効にしてから、もう一度お試しください。"
@@ -115,17 +124,53 @@ def _prepare_local_printer(win32print: object) -> tuple[str | None, bool]:
     except Exception:
         original = None
 
-    changed = original != printer_name
+    changed = original != printer.name
     if changed:
         try:
-            win32print.SetDefaultPrinter(printer_name)  # type: ignore[attr-defined]
+            win32print.SetDefaultPrinter(printer.name)  # type: ignore[attr-defined]
         except Exception as error:
             raise ConversionUnavailableError(
                 "プリンターの接続待ちを回避できませんでした。"
                 "Windowsの既定のプリンターを「Microsoft Print to PDF」にしてから、"
                 "もう一度お試しください。"
             ) from error
-    return original, changed
+    return printer, original, changed
+
+
+def _ensure_local_printer(
+    excel: object, win32print: object, printer: LocalPrinter
+) -> None:
+    """Keep Windows and the running Excel instance on the local PDF printer."""
+    try:
+        current_default = str(win32print.GetDefaultPrinter())  # type: ignore[attr-defined]
+    except Exception:
+        current_default = ""
+    if current_default != printer.name:
+        try:
+            win32print.SetDefaultPrinter(printer.name)  # type: ignore[attr-defined]
+        except Exception as error:
+            raise ConversionUnavailableError(
+                "PDF変換用のローカルプリンターを選択できませんでした。"
+                "社内IT担当者へご相談ください。"
+            ) from error
+
+    # Excel's ActivePrinter value contains both the display name and port.
+    # Keeping the Windows default selected also covers localized Office builds.
+    if printer.port:
+        active_printer = f"{printer.name} on {printer.port}"
+        try:
+            setattr(excel, "ActivePrinter", active_printer)
+        except Exception:
+            try:
+                current_excel_printer = str(getattr(excel, "ActivePrinter"))
+            except Exception:
+                current_excel_printer = ""
+            if printer.name.casefold() not in current_excel_printer.casefold():
+                raise ConversionUnavailableError(
+                    "ExcelにPDF変換用プリンターを設定できませんでした。"
+                    "Windowsの既定のプリンターを「Microsoft Print to PDF」にしてから、"
+                    "もう一度お試しください。"
+                )
 
 
 def _restore_default_printer(
@@ -194,12 +239,15 @@ def convert_workbooks(
     total_started = time.perf_counter()
     timing_lines: list[str] = []
     excel = None
+    local_printer: LocalPrinter | None = None
     original_printer: str | None = None
     printer_changed = False
     pythoncom.CoInitialize()
     try:
         printer_started = time.perf_counter()
-        original_printer, printer_changed = _prepare_local_printer(win32print)
+        local_printer, original_printer, printer_changed = _prepare_local_printer(
+            win32print
+        )
         timing_lines.append(f"printer={time.perf_counter() - printer_started:.2f}s")
         excel_started = time.perf_counter()
         try:
@@ -208,8 +256,6 @@ def convert_workbooks(
             raise ConversionUnavailableError(
                 "Microsoft Excelを起動できませんでした。Excelが入っているか確認してください。"
             ) from error
-        finally:
-            _restore_default_printer(win32print, original_printer, printer_changed)
         timing_lines.append(f"excel_start={time.perf_counter() - excel_started:.2f}s")
 
         excel.Visible = False
@@ -223,6 +269,7 @@ def convert_workbooks(
         _set_if_supported(
             excel, "AutomationSecurity", MSO_AUTOMATION_SECURITY_FORCE_DISABLE
         )
+        _ensure_local_printer(excel, win32print, local_printer)
         total = len(paths)
 
         for index, workbook_path in enumerate(paths, start=1):
@@ -231,6 +278,7 @@ def convert_workbooks(
                 progress(index - 1, total, f"変換中：{workbook_path.name}")
             workbook_started = time.perf_counter()
             try:
+                _ensure_local_printer(excel, win32print, local_printer)
                 workbook = excel.Workbooks.Open(
                     str(workbook_path),
                     UpdateLinks=0,
@@ -254,6 +302,7 @@ def convert_workbooks(
                             f"（{sheet_index}/{len(visible_sheets)}シート）",
                         )
                     sheet_started = time.perf_counter()
+                    _ensure_local_printer(excel, win32print, local_printer)
                     output_path = available_pdf_path(
                         output_dir, workbook_path.stem, str(worksheet.Name)
                     )

@@ -9,7 +9,7 @@ import sys
 import threading
 import ctypes
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import PhotoImage, filedialog, messagebox
 
 import customtkinter as ctk
 
@@ -51,7 +51,10 @@ class ExcelPdfApp(ctk.CTk):
         self.title(APP_TITLE)
         if sys.platform == "win32":
             try:
-                self.iconbitmap(str(_resource_path("assets/app_icon.ico")))
+                self._window_icon = PhotoImage(
+                    file=str(_resource_path("assets/app_icon.png"))
+                )
+                self.iconphoto(True, self._window_icon)
             except Exception:
                 pass
         self.geometry("780x760")
@@ -94,8 +97,11 @@ class ExcelPdfApp(ctk.CTk):
             command=self._choose_files,
             height=48,
             corner_radius=9,
-            fg_color=ACCENT,
-            hover_color=ACCENT_HOVER,
+            fg_color="#FFFFFF",
+            hover_color="#F1F5F9",
+            border_color="#CBD5E1",
+            border_width=1,
+            text_color=TEXT,
             font=ctk.CTkFont(size=15, weight="bold"),
         )
         self.file_button.pack(fill="x", pady=(12, 10))

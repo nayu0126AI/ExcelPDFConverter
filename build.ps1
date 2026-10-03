@@ -10,5 +10,4 @@ if (-not (Test-Path ".venv")) {
 & .\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm ExcelPDFConverter.spec
 
 Write-Host ""
-Write-Host "ビルドが完了しました: dist\ExcelPDFConverter.exe"
-
+Write-Host "ビルドが完了しました: dist\ExcelPDFConverter_v1.2.0.exe"

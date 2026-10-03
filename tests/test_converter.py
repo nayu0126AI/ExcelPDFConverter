@@ -4,7 +4,11 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import excel_pdf_converter.converter as converter
-from excel_pdf_converter.converter import _find_local_pdf_printer, validate_inputs
+from excel_pdf_converter.converter import (
+    LocalPrinter,
+    _find_local_pdf_printer,
+    validate_inputs,
+)
 
 
 def test_validate_inputs_accepts_excel_and_creates_output(tmp_path: Path) -> None:
@@ -26,11 +30,13 @@ def test_find_local_pdf_printer_prefers_microsoft_pdf() -> None:
     fake = SimpleNamespace(
         PRINTER_ENUM_LOCAL=2,
         EnumPrinters=lambda *_: [
-            {"pPrinterName": "Microsoft XPS Document Writer"},
-            {"pPrinterName": "Microsoft Print to PDF"},
+            {"pPrinterName": "Microsoft XPS Document Writer", "pPortName": "XPSPort:"},
+            {"pPrinterName": "Microsoft Print to PDF", "pPortName": "PORTPROMPT:"},
         ],
     )
-    assert _find_local_pdf_printer(fake) == "Microsoft Print to PDF"
+    assert _find_local_pdf_printer(fake) == LocalPrinter(
+        "Microsoft Print to PDF", "PORTPROMPT:"
+    )
 
 
 def test_convert_exports_only_visible_sheets_and_closes_excel(
@@ -47,6 +53,7 @@ def test_convert_exports_only_visible_sheets_and_closes_excel(
             self.Visible = visible
 
         def ExportAsFixedFormat(self, **kwargs: object) -> None:
+            assert printer_state[0] == "Microsoft Print to PDF"
             exported.append(Path(str(kwargs["Filename"])).name)
 
     class FakeWorkbook:
@@ -61,6 +68,7 @@ def test_convert_exports_only_visible_sheets_and_closes_excel(
 
     class FakeWorkbooks:
         def Open(self, filename: str, **kwargs: object) -> FakeWorkbook:
+            assert printer_state[0] == "Microsoft Print to PDF"
             assert filename == str(source.resolve())
             assert kwargs["ReadOnly"] is True
             return workbook
@@ -69,6 +77,7 @@ def test_convert_exports_only_visible_sheets_and_closes_excel(
         def __init__(self) -> None:
             self.Workbooks = FakeWorkbooks()
             self.quit_called = False
+            self.ActivePrinter = ""
 
         def Quit(self) -> None:
             self.quit_called = True
@@ -82,13 +91,19 @@ def test_convert_exports_only_visible_sheets_and_closes_excel(
     win32com = ModuleType("win32com")
     win32com.client = client  # type: ignore[attr-defined]
     printer_changes: list[str] = []
+    printer_state = ["社内ネットワークプリンター"]
     win32print = ModuleType("win32print")
     win32print.PRINTER_ENUM_LOCAL = 2  # type: ignore[attr-defined]
     win32print.EnumPrinters = lambda *_: [  # type: ignore[attr-defined]
-        {"pPrinterName": "Microsoft Print to PDF"}
+        {"pPrinterName": "Microsoft Print to PDF", "pPortName": "PORTPROMPT:"}
     ]
-    win32print.GetDefaultPrinter = lambda: "社内ネットワークプリンター"  # type: ignore[attr-defined]
-    win32print.SetDefaultPrinter = printer_changes.append  # type: ignore[attr-defined]
+    win32print.GetDefaultPrinter = lambda: printer_state[0]  # type: ignore[attr-defined]
+
+    def set_default_printer(name: str) -> None:
+        printer_state[0] = name
+        printer_changes.append(name)
+
+    win32print.SetDefaultPrinter = set_default_printer  # type: ignore[attr-defined]
 
     monkeypatch.setattr(converter.sys, "platform", "win32")
     monkeypatch.setitem(converter.sys.modules, "pythoncom", pythoncom)
@@ -104,8 +119,5 @@ def test_convert_exports_only_visible_sheets_and_closes_excel(
     assert not result.failures
     assert workbook.closed is True
     assert excel.quit_called is True
-    assert printer_changes == [
-        "Microsoft Print to PDF",
-        "社内ネットワークプリンター",
-        "社内ネットワークプリンター",
-    ]
+    assert excel.ActivePrinter == "Microsoft Print to PDF on PORTPROMPT:"
+    assert printer_changes == ["Microsoft Print to PDF", "社内ネットワークプリンター"]
